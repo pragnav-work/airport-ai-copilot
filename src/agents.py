@@ -1,4 +1,7 @@
+from pathlib import Path
+
 import faiss
+import numpy as np
 from sentence_transformers import SentenceTransformer
 
 from src.tools import get_airport_metrics
@@ -10,8 +13,49 @@ from src.prompts import (
 )
 
 
-# Load the embedding model used by the policy retrieval system
+# Load policy documents from the project
+POLICY_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "data"
+    / "airport_policies"
+)
+
+# Load the embedding model once
 embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+
+
+def load_policy_resources():
+    # Read policy files and create chunks
+    chunks = []
+
+    for file in POLICY_PATH.glob("*.md"):
+        text = file.read_text()
+
+        for i in range(0, len(text), 400):
+            chunk = text[i:i + 500]
+
+            if chunk.strip():
+                chunks.append({
+                    "text": chunk,
+                    "source": file.name
+                })
+
+    # Create embeddings for all policy chunks
+    texts = [chunk["text"] for chunk in chunks]
+
+    embeddings = embedding_model.encode(
+        texts,
+        normalize_embeddings=True
+    )
+
+    # Build FAISS index using inner product similarity
+    policy_index = faiss.IndexFlatIP(384)
+
+    policy_index.add(
+        np.array(embeddings, dtype="float32")
+    )
+
+    return chunks, policy_index
 
 
 def investigate_airport(airport_code):
@@ -51,6 +95,7 @@ def search_policy(query, chunks, policy_index, top_k=3):
     # Normalize for cosine similarity using inner product
     faiss.normalize_L2(query_embedding)
 
+    # Retrieve the most relevant policy chunks
     scores, indices = policy_index.search(
         query_embedding,
         top_k
@@ -84,7 +129,10 @@ def policy_agent(query, chunks, policy_index):
     return {
         "status": "success",
         "context": context,
-        "sources": [result["source"] for result in results]
+        "sources": [
+            result["source"]
+            for result in results
+        ]
     }
 
 
@@ -161,10 +209,11 @@ MAX_ITERATIONS = 5
 
 def run_agent_loop(
     airport_code,
-    chunks,
-    policy_index,
     client
 ):
+    # Load RAG resources inside the application
+    chunks, policy_index = load_policy_resources()
+
     # Store visible workflow actions and observations
     trace = []
 
