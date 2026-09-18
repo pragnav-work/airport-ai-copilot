@@ -1,0 +1,23 @@
+Operational investigation:
+
+SFO is experiencing high demand around noon. Investigate the current operational situation and identify the main issue.
+
+
+Policy / RAG:
+
+What is the maximum allowed surge multiplier at SFO, and what policy rule applies?
+
+
+Driver incentive:
+
+SFO has 12 active drivers available during high demand. Calculate the driver incentive for a high-severity situation.
+
+
+End-to-end action + approval:
+
+Increase the surge multiplier at SFO to 1.4x because of high demand and low driver availability.
+
+
+Follow-up / memory:
+
+1.4x
