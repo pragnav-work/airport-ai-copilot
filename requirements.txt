@@ -1,0 +1,8 @@
+pandas
+numpy
+sentence-transformers
+faiss-cpu
+google-genai
+python-dotenv
+streamlit
+pytest

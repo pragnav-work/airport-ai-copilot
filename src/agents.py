@@ -1,4 +1,11 @@
+# Certificate issue resolve
+import os
+
+os.environ["REQUESTS_CA_BUNDLE"] = "/etc/ssl/certs/ca-certificates.crt"
+os.environ["SSL_CERT_FILE"] = "/etc/ssl/certs/ca-certificates.crt"
+
 from pathlib import Path
+import re
 
 import faiss
 import numpy as np
@@ -69,9 +76,11 @@ def investigate_airport(airport_code):
     if metrics["completion_rate"] < 0.85:
         severity = "high"
         issue = "Low completion rate"
+
     elif metrics["completion_rate"] < 0.90:
         severity = "medium"
         issue = "Below-normal completion rate"
+
     else:
         severity = "low"
         issue = "No major completion-rate anomaly"
@@ -85,7 +94,13 @@ def investigate_airport(airport_code):
     }
 
 
-def search_policy(query, chunks, policy_index, top_k=3):
+def search_policy(
+    query,
+    chunks,
+    policy_index,
+    top_k=3,
+    airport_code=None
+):
     # Convert the query into an embedding
     query_embedding = embedding_model.encode(
         [query],
@@ -95,28 +110,75 @@ def search_policy(query, chunks, policy_index, top_k=3):
     # Normalize for cosine similarity using inner product
     faiss.normalize_L2(query_embedding)
 
-    # Retrieve the most relevant policy chunks
-    scores, indices = policy_index.search(
+    # Restrict results to the selected airport
+    if airport_code:
+        airport_chunks = [
+            chunk
+            for chunk in chunks
+            if chunk["source"].lower().startswith(
+                airport_code.lower()
+            )
+        ]
+    else:
+        airport_chunks = chunks
+
+    # Create embeddings for filtered policy chunks
+    airport_texts = [
+        chunk["text"]
+        for chunk in airport_chunks
+    ]
+
+    airport_embeddings = embedding_model.encode(
+        airport_texts,
+        normalize_embeddings=True
+    )
+
+    airport_index = faiss.IndexFlatIP(384)
+
+    airport_index.add(
+        np.array(airport_embeddings, dtype="float32")
+    )
+
+    # Retrieve more chunks so unique policy sources can be selected
+    scores, indices = airport_index.search(
         query_embedding,
-        top_k
+        min(top_k * 3, len(airport_chunks))
     )
 
     results = []
+    seen_sources = set()
 
     for score, idx in zip(scores[0], indices[0]):
-        result = chunks[idx].copy()
+        source = airport_chunks[idx]["source"]
+
+        # Keep only one result per policy document
+        if source in seen_sources:
+            continue
+
+        result = airport_chunks[idx].copy()
         result["score"] = float(score)
+
         results.append(result)
+        seen_sources.add(source)
+
+        if len(results) == top_k:
+            break
 
     return results
 
 
-def policy_agent(query, chunks, policy_index):
+def policy_agent(
+    query,
+    chunks,
+    policy_index,
+    airport_code=None
+):
     # Retrieve relevant policy chunks
     results = search_policy(
         query,
         chunks,
-        policy_index
+        policy_index,
+        airport_code=airport_code
     )
 
     # Build the policy context
@@ -135,11 +197,86 @@ def policy_agent(query, chunks, policy_index):
         ]
     }
 
+def answer_policy_query(
+    query,
+    chunks,
+    policy_index,
+    client,
+    airport_code=None
+):
+    policy_result = policy_agent(
+        query,
+        chunks,
+        policy_index,
+        airport_code=airport_code
+    )
 
-def resolution_agent(investigation, policy_result, client):
+    prompt = f"""
+You are an airport operations policy assistant.
+
+Answer the user's question using only the retrieved policy context.
+
+Rules:
+- Give a concise answer.
+- Do not perform or recommend an operational action.
+- Do not invent information.
+- If the policy does not contain the answer, say so.
+- Use the airport specified by the user.
+- Mention the relevant policy rule clearly.
+
+User Question:
+{query}
+
+Retrieved Policy Context:
+{policy_result["context"]}
+
+Answer:
+"""
+
+    response = client.models.generate_content(
+        model="gemini-3.5-flash-lite",
+        contents=prompt
+    )
+
+    return {
+        "status": "success",
+        "answer": response.text,
+        "sources": policy_result["sources"],
+        "context": policy_result["context"]
+    }
+
+
+def resolution_agent(
+    investigation,
+    policy_result,
+    client,
+    requested_multiplier=None
+):
+    # Include the user's requested multiplier in the reasoning
+    if requested_multiplier is not None:
+        requested_action = (
+            f"The user requested a surge multiplier of "
+            f"{requested_multiplier}x."
+        )
+    else:
+        requested_action = (
+            "The user did not specify a surge multiplier."
+        )
+
     # Build the resolution prompt from collected evidence
     prompt = f"""
 {RESOLUTION_INSTRUCTION}
+
+User Requested Action:
+{requested_action}
+
+Important:
+- Evaluate the user's requested multiplier against the retrieved policy.
+- Do not silently replace the requested multiplier with another value.
+- If the requested multiplier is allowed, evaluate that exact multiplier.
+- If the requested multiplier requires approval, explicitly state that approval is required.
+- If the requested multiplier violates policy, explain why and propose a compliant alternative.
+- Keep the recommendation consistent with the requested action and policy.
 
 Operational Investigation:
 {investigation}
@@ -168,7 +305,8 @@ def orchestrate_airport_issue(
     airport_code,
     chunks,
     policy_index,
-    client
+    client,
+    requested_multiplier=None
 ):
     # Investigate the airport first
     investigation = investigate_airport(airport_code)
@@ -185,14 +323,16 @@ def orchestrate_airport_issue(
     policy_result = policy_agent(
         policy_query,
         chunks,
-        policy_index
+        policy_index,
+        airport_code=airport_code
     )
 
     # Generate the final resolution recommendation
     recommendation = resolution_agent(
         investigation,
         policy_result,
-        client
+        client,
+        requested_multiplier=requested_multiplier
     )
 
     return {
@@ -200,7 +340,8 @@ def orchestrate_airport_issue(
         "airport_code": airport_code,
         "investigation": investigation,
         "policy": policy_result,
-        "recommendation": recommendation
+        "recommendation": recommendation,
+        "requested_multiplier": requested_multiplier
     }
 
 
@@ -209,7 +350,8 @@ MAX_ITERATIONS = 5
 
 def run_agent_loop(
     airport_code,
-    client
+    client,
+    requested_multiplier=None
 ):
     # Load RAG resources inside the application
     chunks, policy_index = load_policy_resources()
@@ -221,7 +363,8 @@ def run_agent_loop(
         "airport_code": airport_code,
         "investigation": None,
         "policy": None,
-        "recommendation": None
+        "recommendation": None,
+        "requested_multiplier": requested_multiplier
     }
 
     for iteration in range(1, MAX_ITERATIONS + 1):
@@ -259,7 +402,8 @@ def run_agent_loop(
             result = policy_agent(
                 policy_query,
                 chunks,
-                policy_index
+                policy_index,
+                airport_code=airport_code
             )
 
             state["policy"] = result
@@ -272,7 +416,8 @@ def run_agent_loop(
             state["recommendation"] = resolution_agent(
                 state["investigation"],
                 state["policy"],
-                client
+                client,
+                requested_multiplier=state["requested_multiplier"]
             )
 
             observation = "Resolution recommendation generated"

@@ -24,6 +24,17 @@ Use the investigation findings and applicable policy.
 Generate practical possible interventions and a recommended resolution.
 Do not execute sensitive actions.
 Clearly explain the recommendation using the available evidence.
+
+Use only the metrics explicitly provided in the investigation.
+
+Do not claim that a metric crossed, approached, or was below a threshold unless the investigation explicitly provides evidence for that claim.
+
+Do not invent historical trends or changes in operational conditions.
+
+For completion rate:
+- 85% or higher is not below the 85% threshold.
+- If completion rate is 86%, describe it as 86% and do not state that it is below or approaching 85%.
+- Follow the severity classification provided by the investigation code.
 """
 
 ORCHESTRATOR_INSTRUCTION = """
@@ -37,3 +48,4 @@ Coordinate the specialized agents:
 Determine what information is required and which agent should handle it.
 Ensure operational claims come from tools and policy claims come from retrieval.
 """
+

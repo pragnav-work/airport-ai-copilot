@@ -100,7 +100,10 @@ def classify_surge_risk(airport_code, new_multiplier):
             "status": "blocked",
             "risk_level": "high",
             "requires_approval": False,
-            "message": "Requested surge exceeds the maximum permitted limit"
+            "message": (
+                "Requested surge exceeds the maximum "
+                "permitted limit"
+            )
         }
 
     # Require approval above 1.3x
@@ -109,14 +112,18 @@ def classify_surge_risk(airport_code, new_multiplier):
             "status": "approval_required",
             "risk_level": "high",
             "requires_approval": True,
-            "message": "Operations Manager approval is required"
+            "message": (
+                "Operations Manager approval is required"
+            )
         }
 
     return {
         "status": "allowed",
         "risk_level": "low",
         "requires_approval": False,
-        "message": "Surge is within the standard approval range"
+        "message": (
+            "Surge is within the standard approval range"
+        )
     }
 
 
@@ -133,7 +140,9 @@ def request_human_approval(
             "airport_code": airport_code,
             "new_multiplier": new_multiplier,
             "reason": reason,
-            "message": "Human approval is required before execution"
+            "message": (
+                "Human approval is required before execution"
+            )
         }
 
     return {
@@ -170,7 +179,9 @@ def evaluate_action(
     if new_multiplier is None or reason is None:
         return {
             "status": "error",
-            "message": "new_multiplier and reason are required"
+            "message": (
+                "new_multiplier and reason are required"
+            )
         }
 
     # Check the airport-specific policy
@@ -192,7 +203,9 @@ def evaluate_action(
         return {
             "status": "pending_approval",
             "risk_level": risk["risk_level"],
-            "message": "Operations Manager approval required"
+            "message": (
+                "Operations Manager approval required"
+            )
         }
 
     return {
@@ -207,7 +220,8 @@ def execute_guarded_action(
     airport_code,
     new_multiplier,
     reason,
-    approved=False
+    approved=False,
+    audit_context=None
 ):
     # Evaluate the action before execution
     decision = evaluate_action(
@@ -219,8 +233,29 @@ def execute_guarded_action(
         approved
     )
 
-    # Store the complete guardrail decision
+    # Use additional workflow information when provided
+    audit_context = audit_context or {}
+
+    # Store the complete decision trail
     audit_record = {
+        "user_request": audit_context.get(
+            "user_request"
+        ),
+        "agents_invoked": audit_context.get(
+            "agents_invoked",
+            []
+        ),
+        "tools_called": audit_context.get(
+            "tools_called",
+            []
+        ),
+        "retrieved_policies": audit_context.get(
+            "retrieved_policies",
+            []
+        ),
+        "recommendation": audit_context.get(
+            "recommendation"
+        ),
         "role": role,
         "airport_code": airport_code,
         "action": "execute_surge",
@@ -229,6 +264,7 @@ def execute_guarded_action(
         "approval": approved,
         "guardrail_status": decision["status"],
         "risk_level": decision.get("risk_level"),
+        "final_action": "execute_surge",
         "execution_status": "not_executed"
     }
 
@@ -246,6 +282,7 @@ def execute_guarded_action(
 
     # Record the execution result
     audit_record["execution_status"] = result["status"]
+
     audit_trail.append(audit_record)
 
     return result
@@ -280,3 +317,191 @@ def create_distilled_record(
         "human_approval": human_approval,
         "final_action": final_action
     }
+
+
+# ---------------------------------------------------------
+# Intent Classification
+# ---------------------------------------------------------
+
+def classify_user_intent(user_query):
+    """
+    Classify the user's request before running the agent workflow.
+    """
+
+    query = user_query.strip().lower()
+
+    if not query:
+        return "out_of_scope"
+
+
+    # -----------------------------------------------------
+    # Conversational Requests
+    # -----------------------------------------------------
+
+    conversational_phrases = [
+        "hi",
+        "hello",
+        "hey",
+        "hi there",
+        "hello there",
+        "hey there",
+        "good morning",
+        "good afternoon",
+        "good evening",
+        "what can you do",
+        "what can i do",
+        "what can i ask",
+        "what can i ask you",
+        "what do you do",
+        "how can you help",
+        "how can you help me",
+        "help",
+        "help me",
+        "who are you",
+        "thanks",
+        "thank you",
+        "thankyou"
+    ]
+
+    if query in conversational_phrases:
+        return "conversational"
+
+
+    # -----------------------------------------------------
+    # Action Requests
+    # -----------------------------------------------------
+
+    action_keywords = [
+        "increase surge",
+        "decrease surge",
+        "change surge",
+        "set surge",
+        "trigger surge",
+        "execute surge",
+        "approve surge",
+        "apply surge",
+        "raise surge",
+        "lower surge",
+        "increase the surge",
+        "decrease the surge",
+        "change the surge",
+        "set the surge",
+        "driver incentive",
+        "driver incentives",
+        "give drivers",
+        "calculate incentive",
+        "calculate incentives",
+        "validate trip",
+        "validate",
+        "execute",
+        "approve"
+    ]
+
+    if any(keyword in query for keyword in action_keywords):
+        return "action"
+
+
+    # -----------------------------------------------------
+    # RAG / Information Requests
+    # -----------------------------------------------------
+
+    rag_keywords = [
+        "policy",
+        "policies",
+        "maximum surge",
+        "max surge",
+        "surge limit",
+        "surge limits",
+        "surge range",
+        "surge",
+        "completion rate",
+        "average eta",
+        "eta",
+        "active drivers",
+        "driver cancellation",
+        "cancellation rate",
+        "queue",
+        "queue size",
+        "pricing",
+        "operations",
+        "operational",
+        "supply",
+        "drivers",
+        "metrics",
+        "metric",
+        "airport",
+        "airport operations",
+        "what is",
+        "what are",
+        "how many",
+        "how much",
+        "why is",
+        "why are",
+        "current"
+    ]
+
+    airport_codes = [
+        "sfo",
+        "lax",
+        "jfk"
+    ]
+
+    if (
+        any(keyword in query for keyword in rag_keywords)
+        or any(airport in query for airport in airport_codes)
+    ):
+        return "rag"
+
+
+    # -----------------------------------------------------
+    # Out of Scope
+    # -----------------------------------------------------
+
+    return "out_of_scope"
+
+
+# ---------------------------------------------------------
+# Intent Responses
+# ---------------------------------------------------------
+
+def get_intent_response(intent):
+    """
+    Return a helpful response for conversational
+    and out-of-scope requests.
+    """
+
+    if intent == "conversational":
+        return (
+            "Hello! 👋 I'm the Airport Operations Copilot.\n\n"
+            "I can help with:\n"
+            "- Airport operational metrics\n"
+            "- Airport policies and pricing rules\n"
+            "- Driver supply and incentives\n"
+            "- Surge pricing validation\n"
+            "- High-risk action approval and execution\n\n"
+            "Supported airports: SFO, LAX, and JFK.\n\n"
+            "Try asking:\n"
+            "- \"What is the completion rate at SFO?\"\n"
+            "- \"What is the maximum surge at SFO?\"\n"
+            "- \"Can we increase surge to 1.4x at SFO?\""
+        )
+
+
+    if intent == "out_of_scope":
+        return (
+            "I can help with airport operations, but I'm not sure "
+            "what you'd like me to do with that request.\n\n"
+            "I can help with:\n"
+            "- Airport operational metrics\n"
+            "- Airport policies and pricing rules\n"
+            "- Driver supply and incentives\n"
+            "- Surge pricing validation\n"
+            "- High-risk action approval and execution\n\n"
+            "Supported airports: SFO, LAX, and JFK.\n\n"
+            "For example, you can ask:\n"
+            "- \"What is the current surge at SFO?\"\n"
+            "- \"What is the maximum surge at SFO?\"\n"
+            "- \"Can we increase surge to 1.4x at SFO?\""
+        )
+
+    return None
